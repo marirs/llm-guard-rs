@@ -7,6 +7,7 @@ license     = "MIT OR Apache-2.0"
 description = "Zero-copy guardrails for LLM input/output. Pure-Rust scanners (prompt-injection, role-override, secret leakage, invisible text, token limit)."
 keywords    = ["llm", "safety", "guard", "prompt-injection", "security"]
 categories  = ["text-processing"]
+authors = ["Sriram <marirs@gmail.com>"]
 
 [lib]
 name = "llm_guard"
