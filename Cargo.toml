@@ -1,0 +1,26 @@
+[package]
+name        = "llm-guard"
+version     = "0.1.0"
+edition     = "2024"
+rust-version = "1.85"
+license     = "MIT OR Apache-2.0"
+description = "Zero-copy guardrails for LLM input/output. Pure-Rust scanners (prompt-injection, role-override, secret leakage, invisible text, token limit)."
+keywords    = ["llm", "safety", "guard", "prompt-injection", "security"]
+categories  = ["text-processing"]
+
+[lib]
+name = "llm_guard"
+path = "src/lib.rs"
+
+[dependencies]
+# Multi-pattern matcher used by the BanSubstrings scanner; faster than
+# N independent contains() calls and gives us byte-offset spans so the
+# caller can render highlights without re-scanning.
+aho-corasick = "1"
+
+# Compiled regex for the Secrets scanner. Patterns are static so the
+# compile happens once on first use via std::sync::LazyLock.
+regex        = "1"
+
+[lints]
+workspace = true
