@@ -11,13 +11,11 @@ Zero-copy guardrails for LLM input/output. Pure-Rust port of selected
 scanners from the upstream Python [llm-guard](https://github.com/protectai/llm-guard)
 — no Python, no ML runtime, no network calls.
 
-## Why
-
-Upstream `llm-guard` is Python + pandas + transformers — too heavy
-to depend on from a Rust web server. This crate keeps the scanner
-*names* and *intent* familiar so the integration call site reads like
-the upstream docs, but the implementations are minimal, deterministic,
-and pure-regex / pure-substring.
+## Installation
+```toml
+[dependencies]
+llm-guard = "0.1"
+```
 
 ## Design
 
@@ -36,9 +34,12 @@ and pure-regex / pure-substring.
 | Scanner         | Purpose                                                              |
 | --------------- | -------------------------------------------------------------------- |
 | `BanSubstrings` | Multi-pattern substring match via Aho–Corasick (case-insensitive).   |
+| `BanCode`       | Detect code-like content (fences, language prefixes, script tags).   |
 | `RoleOverride`  | Chat-template marker injection (system/instruction prefixes).        |
 | `Secrets`       | Regex-based credential leak detection (API keys, PEM, JWT).          |
 | `InvisibleText` | Zero-width / bidi-override codepoints used in prompt smuggling.      |
+| `ScriptMix`     | Unicode-script mixing (Cyrillic look-alikes against Latin, etc.).    |
+| `RegexScan`     | Caller-supplied regex patterns for custom shapes.                    |
 | `TokenLimit`    | Cheap character-count gate before invoking the model.                |
 
 Helpers:
@@ -56,36 +57,64 @@ Curated pattern tables in `patterns::`:
 
 ## Usage
 
+### Minimal input guard
+
 ```rust
-use llm_guard::{Pipeline, PipelineMode, BanSubstrings, Secrets, InvisibleText, TokenLimit};
+use llm_guard::{
+    Pipeline, PipelineMode, BanSubstrings, InvisibleText, RoleOverride, TokenLimit,
+    patterns::COMMON_INJECTION_PATTERNS,
+};
 
-const INJECTION_PATTERNS: &[&str] = &[
-    "ignore previous instructions",
-    "developer mode",
-    "system:",
-];
-
-let pipeline = Pipeline::new(PipelineMode::FirstHit)
+let input_guard = Pipeline::new(PipelineMode::FirstHit)
     .with(TokenLimit::new(8_000))
     .with(InvisibleText::new())
-    .with(BanSubstrings::new("injection", INJECTION_PATTERNS))
-    .with(Secrets::new());
+    .with(RoleOverride::new())
+    .with(BanSubstrings::new("injection", COMMON_INJECTION_PATTERNS));
 
-let result = pipeline.scan(user_input);
+let result = input_guard.scan(user_input);
 if result.flagged() {
     let first = result.first().unwrap();
-    tracing::warn!(
-        scanner = first.scanner,
-        pattern = first.pattern,
-        "input refused"
-    );
+    tracing::warn!(scanner = first.scanner, pattern = first.pattern, "input refused");
     // refuse, redact, or return an error to the caller
+}
+```
+
+### Output guard — collect every hit
+
+```rust
+use llm_guard::{
+    Pipeline, PipelineMode, BanSubstrings, Secrets,
+    patterns::IDENTITY_LEAK_MARKERS,
+};
+
+let output_guard = Pipeline::new(PipelineMode::All)
+    .with(Secrets::new())
+    .with(BanSubstrings::new("identity_leak", IDENTITY_LEAK_MARKERS));
+
+let result = output_guard.scan(model_response);
+for m in &result.matches {
+    tracing::warn!(scanner = m.scanner, pattern = m.pattern, span = ?m.span);
 }
 ```
 
 `PipelineMode::All` collects every match across every scanner —
 useful for output filtering where you want the full audit picture.
 `PipelineMode::FirstHit` stops at the first scanner that flags.
+
+### Caller-supplied regex
+
+```rust
+use llm_guard::{RegexScan, RegexPattern, Scanner};
+
+let scanner = RegexScan::new("internal", vec![
+    RegexPattern::new("employee_id", r"\bEMP-\d{6}\b").unwrap(),
+    RegexPattern::new("ticket_ref",  r"\bTKT-[A-Z]{3}-\d{4}\b").unwrap(),
+]);
+let r = scanner.scan("ticket from EMP-123456 escalated");
+assert!(r.flagged());
+```
+
+See the [`examples/`](examples/) directory for runnable end-to-end usage.
 
 ## Adding a scanner
 
@@ -112,8 +141,9 @@ registry — the integration layer owns the assembly.
 
 ## Status
 
-Library is unit-tested (25 tests) and clippy-clean under
-`#![warn(clippy::pedantic)]`. Not yet wired into a host crate.
+Library is unit-tested (49 tests) and clippy-clean under
+`#![warn(clippy::pedantic)]`. CI builds + tests on Linux/macOS/Windows
+across x86_64 and aarch64.
 
 ## License
 

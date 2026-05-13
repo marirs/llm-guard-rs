@@ -15,7 +15,8 @@
 //! - [`sanitize`] - control-char stripping, returns `Cow<str>`
 //!   (borrowed when input is already clean).
 //! - [`scanners`] - concrete scanner impls (`BanSubstrings`,
-//!   `Secrets`, `InvisibleText`, `TokenLimit`, `RoleOverride`).
+//!   `Secrets`, `InvisibleText`, `TokenLimit`, `RoleOverride`,
+//!   `RegexScan`, `BanCode`, `ScriptMix`).
 //! - [`patterns`] - curated `&'static [&'static str]` lists for the
 //!   common prompt-injection / identity-leak cases, ready to plug
 //!   into a `BanSubstrings`.
@@ -164,4 +165,7 @@ impl Pipeline {
 }
 
 pub use sanitize::strip_controls;
-pub use scanners::{BanSubstrings, InvisibleText, RoleOverride, Secrets, TokenLimit};
+pub use scanners::{
+    BanCode, BanSubstrings, InvisibleText, RegexPattern, RegexScan, RoleOverride, ScriptMix,
+    Secrets, TokenLimit,
+};
