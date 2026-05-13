@@ -23,5 +23,38 @@ aho-corasick = "1"
 # compile happens once on first use via std::sync::LazyLock.
 regex        = "1"
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic                = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+
+# Fast iteration. Default opt-level=0 + full debuginfo so panics in
+# tests / examples point at exact lines.
+[profile.dev]
+opt-level     = 0
+debug         = true
+overflow-checks = true
+incremental   = true
+
+# Honest test ergonomics: keep asserts and debug symbols, but turn on
+# light optimisation so the Aho-Corasick build and regex compile don't
+# dominate `cargo test` wall time.
+[profile.test]
+opt-level     = 1
+debug         = true
+overflow-checks = true
+
+# Production. Single codegen unit and fat LTO so the hot path (the
+# Aho-Corasick `find_iter` loop and the regex matcher) inline well.
+# Strips symbols - this is a library; consumers add their own debug
+# info via their own release profile if they want it.
+[profile.release]
+opt-level       = 3
+lto             = "fat"
+codegen-units   = 1
+debug           = false
+strip           = "symbols"
+panic           = "abort"
+overflow-checks = false

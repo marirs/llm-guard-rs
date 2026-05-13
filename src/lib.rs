@@ -15,7 +15,12 @@
 //! - [`sanitize`] - control-char stripping, returns `Cow<str>`
 //!   (borrowed when input is already clean).
 //! - [`scanners`] - concrete scanner impls (`BanSubstrings`,
-//!   `Secrets`, `InvisibleText`, `TokenLimit`).
+//!   `Secrets`, `InvisibleText`, `TokenLimit`, `RoleOverride`).
+//! - [`patterns`] - curated `&'static [&'static str]` lists for the
+//!   common prompt-injection / identity-leak cases, ready to plug
+//!   into a `BanSubstrings`.
+//! - [`wrap`] - defence-boundary helper for splicing user input into
+//!   a chat-template turn.
 //!
 //! ## Why this exists
 //!
@@ -38,8 +43,10 @@
 
 use std::ops::Range;
 
+pub mod patterns;
 pub mod sanitize;
 pub mod scanners;
+pub mod wrap;
 
 /// A single scanner hit. Spans are byte offsets into the original
 /// input; `text` is `&input[span]` so callers can render it directly
@@ -157,4 +164,4 @@ impl Pipeline {
 }
 
 pub use sanitize::strip_controls;
-pub use scanners::{BanSubstrings, InvisibleText, Secrets, TokenLimit};
+pub use scanners::{BanSubstrings, InvisibleText, RoleOverride, Secrets, TokenLimit};

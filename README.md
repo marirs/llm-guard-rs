@@ -26,16 +26,26 @@ and pure-regex / pure-substring.
 
 ## Scanners
 
-| Scanner          | Purpose                                                      |
-| ---------------- | ------------------------------------------------------------ |
-| `BanSubstrings`  | Multi-pattern substring match via Aho–Corasick (case-insensitive). |
-| `Secrets`        | Regex-based credential leak detection (API keys, PEM, JWT).  |
-| `InvisibleText`  | Zero-width / bidi-override codepoints used in prompt smuggling. |
-| `TokenLimit`     | Cheap character-count gate before invoking the model.        |
+| Scanner         | Purpose                                                              |
+| --------------- | -------------------------------------------------------------------- |
+| `BanSubstrings` | Multi-pattern substring match via Aho–Corasick (case-insensitive).   |
+| `RoleOverride`  | Chat-template marker injection (system/instruction prefixes).        |
+| `Secrets`       | Regex-based credential leak detection (API keys, PEM, JWT).          |
+| `InvisibleText` | Zero-width / bidi-override codepoints used in prompt smuggling.      |
+| `TokenLimit`    | Cheap character-count gate before invoking the model.                |
 
-The `sanitize::strip_controls` helper replaces C0/C1 control chars
-with spaces and returns `Cow<str>` — borrowed when the input is
-already clean.
+Helpers:
+
+- `sanitize::strip_controls` — replaces C0/C1 control chars with spaces,
+  returns `Cow<str>` (borrowed when input is clean).
+- `wrap::with_boundary` — wraps user input with defence delimiters and
+  an optional warning preamble for flagged messages.
+
+Curated pattern tables in `patterns::`:
+
+- `COMMON_INJECTION_PATTERNS` — generic prompt-injection phrases.
+- `ROLE_OVERRIDE_PATTERNS` — what `RoleOverride` uses internally.
+- `IDENTITY_LEAK_MARKERS` — for output-side `BanSubstrings`.
 
 ## Usage
 
