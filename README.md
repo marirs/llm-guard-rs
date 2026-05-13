@@ -1,5 +1,12 @@
 # llm-guard
 
+[![CI](https://github.com/marirs/llm-guard-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/marirs/llm-guard-rs/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/llm-guard.svg)](https://crates.io/crates/llm-guard)
+[![Docs.rs](https://docs.rs/llm-guard/badge.svg)](https://docs.rs/llm-guard)
+[![Downloads](https://img.shields.io/crates/d/llm-guard.svg)](https://crates.io/crates/llm-guard)
+[![License](https://img.shields.io/crates/l/llm-guard.svg)](#license)
+[![MSRV](https://img.shields.io/badge/MSRV-1.85-blue.svg)](https://github.com/marirs/llm-guard-rs)
+
 Zero-copy guardrails for LLM input/output. Pure-Rust port of selected
 scanners from the upstream Python [llm-guard](https://github.com/protectai/llm-guard)
 — no Python, no ML runtime, no network calls.

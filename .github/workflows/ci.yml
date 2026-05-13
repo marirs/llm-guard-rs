@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    name: test ${{ matrix.target }} (${{ matrix.toolchain }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64
+          - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  toolchain: stable }
+          - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  toolchain: "1.85" }
+          # Linux aarch64 - cross-compile + run under qemu so we get real test coverage
+          - { os: ubuntu-latest,    target: aarch64-unknown-linux-gnu, toolchain: stable, cross: true }
+          - { os: ubuntu-latest,    target: aarch64-unknown-linux-gnu, toolchain: "1.85", cross: true }
+          # macOS x86_64 (Intel) - macos-13 is the last Intel runner
+          - { os: macos-13,         target: x86_64-apple-darwin,       toolchain: stable }
+          - { os: macos-13,         target: x86_64-apple-darwin,       toolchain: "1.85" }
+          # macOS aarch64 (Apple Silicon) - macos-14+ runs on M1
+          - { os: macos-latest,     target: aarch64-apple-darwin,      toolchain: stable }
+          - { os: macos-latest,     target: aarch64-apple-darwin,      toolchain: "1.85" }
+          # Windows x86_64
+          - { os: windows-latest,   target: x86_64-pc-windows-msvc,    toolchain: stable }
+          - { os: windows-latest,   target: x86_64-pc-windows-msvc,    toolchain: "1.85" }
+          # Windows aarch64 - GitHub-hosted aarch64 Windows runners are still in preview;
+          # build-only via cross-compile from x86_64 so we at least catch type-level regressions.
+          - { os: windows-latest,   target: aarch64-pc-windows-msvc,   toolchain: stable, build_only: true }
+          - { os: windows-latest,   target: aarch64-pc-windows-msvc,   toolchain: "1.85", build_only: true }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}-${{ matrix.toolchain }}
+
+      # Install `cross` for Linux aarch64 so tests run under qemu.
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --target ${{ matrix.target }} --verbose
+          else
+            cargo build --target ${{ matrix.target }} --verbose
+          fi
+
+      - name: Test
+        if: matrix.build_only != true
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross test --target ${{ matrix.target }} --verbose
+          else
+            cargo test --target ${{ matrix.target }} --verbose
+          fi
