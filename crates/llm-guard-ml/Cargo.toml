@@ -1,0 +1,75 @@
+[package]
+name        = "llm-guard-ml"
+version     = "0.1.0"
+edition     = "2024"
+rust-version = "1.85"
+license     = "MIT OR Apache-2.0"
+description = "ONNX-runtime-backed scanners for llm-guard. Catches paraphrased / novel prompt-injection attacks the rules tier can't. CPU by default; CUDA / CoreML / DirectML opt-in."
+keywords    = ["llm", "safety", "prompt-injection", "onnx", "guardrails"]
+categories  = ["text-processing"]
+authors = ["Sriram <marirs@gmail.com>"]
+repository  = "https://github.com/marirs/llm-guard-rs"
+
+[lib]
+name = "llm_guard_ml"
+path = "src/lib.rs"
+
+[dependencies]
+# Re-uses the Scanner trait + Match/ScanResult types from the base
+# crate so OnnxScanner drops into the same Pipeline as the rules-tier
+# scanners.
+llm-guard = { version = "0.2", path = "../llm-guard" }
+
+# ONNX Runtime bindings. `2.0.0-rc.12` is the current pre-release.
+# Pinned tightly to avoid breaking on the next API churn before 2.0
+# ships final. CPU execution provider is built-in; GPU EPs are opt-in
+# via the corresponding feature flags below.
+#
+# `download-binaries` fetches the prebuilt ONNX Runtime shared library
+# at *build* time and links it in - so the consumer doesn't need to
+# install libonnxruntime via their OS package manager. This is a
+# build-time network fetch, not a runtime one; runtime stays
+# air-gapped.
+#
+# We disable the upstream `ndarray` (we use the (shape, vec) tuple
+# constructor directly) and `tracing` (we don't emit trace events).
+# `tls-rustls` is required by `download-binaries` for the build-time
+# fetch - pure-Rust TLS, no system OpenSSL needed. `copy-dylibs`
+# places the downloaded shared lib next to the consumer's binary.
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "download-binaries", "tls-rustls", "copy-dylibs", "api-24"] }
+
+# Hugging Face tokenizers. Loads `tokenizer.json` directly. The crate
+# pulls in onig as a regex backend by default; we trim to the smaller
+# `unstable_wasm` profile equivalent (no onig, smaller binary, slightly
+# slower regex). The classifier we ship uses WordPiece / SentencePiece
+# tokenizers where the regex backend matters less.
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
+
+# Lightweight error type. Used for the FromFileError that surfaces
+# tokenizer / model load failures. `thiserror` is the de facto Rust
+# library-side error crate; ~4KB compiled.
+thiserror = "2"
+
+[features]
+default = []
+
+# CUDA execution provider. Requires CUDA toolkit + cuDNN installed on
+# the build/runtime machine. ~400µs p99 inference for our distilled
+# classifier (vs ~3-10ms CPU).
+cuda = ["ort/cuda"]
+
+# Apple Silicon / macOS CoreML execution provider. ~1-3ms p99.
+coreml = ["ort/coreml"]
+
+# Windows DirectML execution provider (DirectX 12 GPU acceleration).
+directml = ["ort/directml"]
+
+[lints.rust]
+# Same `deny` rather than `forbid` policy as the base crate - allows
+# the test fixture builder (which uses `unsafe` to construct raw
+# ndarray-style tensor data) to opt in narrowly.
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic                = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
