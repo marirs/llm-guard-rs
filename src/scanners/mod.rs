@@ -5,6 +5,8 @@
 pub mod ban_code;
 pub mod ban_substrings;
 pub mod deobfuscate;
+#[cfg(feature = "fuzzy")]
+pub mod fuzzy_match;
 pub mod invisible_text;
 pub mod markdown_link_smuggle;
 pub mod pii_patterns;
@@ -20,6 +22,8 @@ pub mod url_extract;
 pub use ban_code::BanCode;
 pub use ban_substrings::BanSubstrings;
 pub use deobfuscate::Deobfuscate;
+#[cfg(feature = "fuzzy")]
+pub use fuzzy_match::FuzzyMatch;
 pub use invisible_text::InvisibleText;
 pub use markdown_link_smuggle::MarkdownLinkSmuggle;
 pub use pii_patterns::PiiPatterns;

@@ -53,6 +53,8 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+#[cfg(feature = "fuzzy")]
+use llm_guard::FuzzyMatch;
 use llm_guard::{
     BanCode, BanSubstrings, Deobfuscate, InvisibleText, MarkdownLinkSmuggle, PiiPatterns,
     Repetition, RoleOverride, Scanner, ScriptMix, Secrets, TemplateMarkerShape, TokenLimit,
@@ -258,4 +260,54 @@ fn markdown_link_smuggle_clean_bounded() {
 fn template_marker_shape_clean_bounded() {
     let s = TemplateMarkerShape::new();
     assert_bounded(&s, "TemplateMarkerShape");
+}
+
+// ---- Fuzzy scanner alloc contract (--features fuzzy) --------------
+
+/// `FuzzyMatch` allocates the normalised input `String` + the trigram
+/// `HashSet` (which may rehash once or twice as it grows). Cap at
+/// [`FUZZY_MAX_PER_CALL`] - well above the expected ~3-5, well below
+/// any pathological per-pattern alloc.
+#[cfg(feature = "fuzzy")]
+const FUZZY_MAX_PER_CALL: usize = 10;
+
+/// `FuzzyMatch` builds an input-side trigram `HashSet` per call;
+/// that's unavoidable. The contract we enforce is: per-call alloc
+/// count is bounded by a small multiple and does not grow
+/// worse-than-linearly with input length. A naive implementation
+/// that allocated per canonical phrase would fail this; a naive
+/// implementation that rebuilt the corpus trigrams per scan would
+/// also fail this.
+#[cfg(feature = "fuzzy")]
+#[test]
+fn fuzzy_match_clean_bounded() {
+    let s = FuzzyMatch::new();
+    if !cfg!(debug_assertions) {
+        let short = CLEAN;
+        let long = long_clean();
+        for _ in 0..WARMUP {
+            let _ = s.scan(short);
+            let _ = s.scan(&long);
+        }
+        let short_allocs = count_allocs(|| {
+            for _ in 0..STEADY {
+                let _ = s.scan(short);
+            }
+        });
+        let long_allocs = count_allocs(|| {
+            for _ in 0..STEADY {
+                let _ = s.scan(&long);
+            }
+        });
+        let short_per_call = short_allocs / STEADY;
+        let long_per_call = long_allocs / STEADY;
+        assert!(
+            short_per_call <= FUZZY_MAX_PER_CALL,
+            "FuzzyMatch short: {short_per_call}/call (cap {FUZZY_MAX_PER_CALL})"
+        );
+        assert!(
+            long_per_call <= FUZZY_MAX_PER_CALL,
+            "FuzzyMatch long: {long_per_call}/call (cap {FUZZY_MAX_PER_CALL})"
+        );
+    }
 }

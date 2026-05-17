@@ -32,6 +32,19 @@ base64       = "0.22"
 # no runtime data downloads (tables compiled in at build time).
 unicode-security = "0.1"
 
+[features]
+# Opt-in fuzzy paraphrase matching. Adds the FuzzyMatch scanner which
+# does trigram-Jaccard similarity against a corpus of canonical
+# injection phrases - catches rephrased attacks that the literal
+# substring tables miss. Off by default because:
+#  - it's a heuristic, not a literal match (Medium confidence, Warn
+#    severity by default - feeds the audit log, doesn't auto-refuse);
+#  - it shifts the per-scan cost from O(input) substring to
+#    O(input * corpus_size) trigram intersection. Still microsecond
+#    range, but degrades the "guaranteed sub-ms" promise we make
+#    on the default build.
+fuzzy = []
+
 [lints.rust]
 # `deny` rather than `forbid` so the integration test that swaps the
 # global allocator can opt-in with `#![allow(unsafe_code)]`. The

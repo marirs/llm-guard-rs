@@ -293,3 +293,6 @@ pub use scanners::{
 pub use scanners::{
     Deobfuscate, MarkdownLinkSmuggle, PiiPatterns, Repetition, TemplateMarkerShape, UrlExtract,
 };
+// Opt-in fuzzy paraphrase matcher (--features fuzzy).
+#[cfg(feature = "fuzzy")]
+pub use scanners::FuzzyMatch;
