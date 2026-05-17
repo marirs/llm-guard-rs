@@ -22,6 +22,13 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Clippy runs against the full workspace including llm-guard-ml.
+  # We do NOT pass `--all-features` because that would activate
+  # `cuda` / `coreml` / `directml` simultaneously, and only one EP is
+  # meaningful on any given host. We explicitly check the two
+  # feature combinations consumers actually use:
+  #   1. base crate alone (default features)
+  #   2. base crate with fuzzy
   clippy:
     name: clippy
     runs-on: ubuntu-latest
@@ -31,32 +38,30 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets --features llm-guard/fuzzy -- -D warnings
 
-  test:
-    name: test ${{ matrix.target }} (${{ matrix.toolchain }})
+  # `llm-guard` (the base crate) is the contract we guarantee across
+  # platforms and MSRV. Tested on:
+  #   - Linux x86_64 + aarch64 (cross + qemu)
+  #   - macOS Apple Silicon
+  #   - Windows x86_64 native + aarch64 build-only
+  # Each platform runs the test suite at stable AND the 1.85 MSRV.
+  test-base:
+    name: base test ${{ matrix.target }} (${{ matrix.toolchain }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64
           - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  toolchain: stable }
           - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  toolchain: "1.85" }
-          # Linux aarch64 - cross-compile + run under qemu so we get real test coverage
           - { os: ubuntu-latest,    target: aarch64-unknown-linux-gnu, toolchain: stable, cross: true }
           - { os: ubuntu-latest,    target: aarch64-unknown-linux-gnu, toolchain: "1.85", cross: true }
-          # macOS Intel skipped: GitHub-hosted macos-13 runners have
-          # multi-minute queue depths and are scheduled for retirement.
-          # Apple-Silicon coverage via macos-latest (Sonoma+, M1) is
-          # enough for the macOS audience that still matters.
           - { os: macos-latest,     target: aarch64-apple-darwin,      toolchain: stable }
           - { os: macos-latest,     target: aarch64-apple-darwin,      toolchain: "1.85" }
-          # Windows x86_64
           - { os: windows-latest,   target: x86_64-pc-windows-msvc,    toolchain: stable }
           - { os: windows-latest,   target: x86_64-pc-windows-msvc,    toolchain: "1.85" }
-          # Windows aarch64 - GitHub-hosted aarch64 Windows runners are still in preview;
-          # build-only via cross-compile from x86_64 so we at least catch type-level regressions.
           - { os: windows-latest,   target: aarch64-pc-windows-msvc,   toolchain: stable, build_only: true }
           - { os: windows-latest,   target: aarch64-pc-windows-msvc,   toolchain: "1.85", build_only: true }
     steps:
@@ -69,28 +74,77 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}-${{ matrix.toolchain }}
+          key: base-${{ matrix.target }}-${{ matrix.toolchain }}
 
-      # Install `cross` for Linux aarch64 so tests run under qemu.
       - name: Install cross
         if: matrix.cross
         run: cargo install cross --locked
 
-      - name: Build
+      # Build the base crate, default features.
+      - name: Build (default)
         shell: bash
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --target ${{ matrix.target }} --verbose
+            cross build -p llm-guard --target ${{ matrix.target }} --verbose
           else
-            cargo build --target ${{ matrix.target }} --verbose
+            cargo build -p llm-guard --target ${{ matrix.target }} --verbose
           fi
 
-      - name: Test
+      # Build the base crate with the fuzzy feature on.
+      - name: Build (--features fuzzy)
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build -p llm-guard --features fuzzy --target ${{ matrix.target }} --verbose
+          else
+            cargo build -p llm-guard --features fuzzy --target ${{ matrix.target }} --verbose
+          fi
+
+      - name: Test (default)
         if: matrix.build_only != true
         shell: bash
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross test --target ${{ matrix.target }} --verbose
+            cross test -p llm-guard --target ${{ matrix.target }} --verbose
           else
-            cargo test --target ${{ matrix.target }} --verbose
+            cargo test -p llm-guard --target ${{ matrix.target }} --verbose
           fi
+
+      - name: Test (--features fuzzy)
+        if: matrix.build_only != true
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross test -p llm-guard --features fuzzy --target ${{ matrix.target }} --verbose
+          else
+            cargo test -p llm-guard --features fuzzy --target ${{ matrix.target }} --verbose
+          fi
+
+  # `llm-guard-ml` has a much narrower matrix because:
+  #   1. ort 2.0.0-rc.12 requires rustc 1.88+ (we can't promise 1.85)
+  #   2. download-binaries fetches the ORT shared library at build
+  #      time - this is unreliable under `cross`/qemu (proxy/cert
+  #      issues) and on aarch64-Windows (no prebuilt for that
+  #      target yet). We pin to host-native targets only.
+  # This job runs on stable. Drop it (skip via path filter) if you
+  # don't want the ML deps to gate merges.
+  test-ml:
+    name: ml test ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu }
+          - { os: macos-latest,   target: aarch64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ml-${{ matrix.target }}
+      - run: cargo build -p llm-guard-ml --target ${{ matrix.target }} --verbose
+      - run: cargo test -p llm-guard-ml --target ${{ matrix.target }} --verbose
