@@ -61,7 +61,17 @@ static PATTERNS: LazyLock<Vec<PiiPattern>> = LazyLock::new(|| {
             // between groups. Bare 10-digit US numbers are NOT in
             // here because the FP rate is too high (any 10-digit
             // ID column would trip it).
-            re: Regex::new(r"\+\d{1,3}[\s.-]?\(?\d{1,4}\)?[\s.-]?\d{1,4}[\s.-]?\d{1,9}").unwrap(),
+            //
+            // The second group is `(?:\(\d{1,4}\)|\d{1,4})` - a
+            // *matched* paren pair OR no parens at all, never
+            // one-sided. The previous version had `\(?\d{1,4}\)?`
+            // which would match "+1 (415 555-0199" (open with no
+            // close) and "+1 415) 555-0199" (close with no open),
+            // both clearly broken inputs that bloated the FP rate.
+            re: Regex::new(
+                r"\+\d{1,3}[\s.-]?(?:\(\d{1,4}\)|\d{1,4})[\s.-]?\d{1,4}[\s.-]?\d{1,9}",
+            )
+            .unwrap(),
             validate: None,
         },
         PiiPattern {
@@ -293,6 +303,41 @@ mod tests {
         let r = PiiPatterns::new().scan("call +1 415-555-0199 anytime");
         assert!(r.flagged());
         assert_eq!(r.first().unwrap().pattern, "phone_e164");
+    }
+
+    #[test]
+    fn e164_phone_matched_parens_flagged() {
+        let r = PiiPatterns::new().scan("call +1 (415) 555-0199 anytime");
+        assert!(r.flagged());
+        assert_eq!(r.first().unwrap().pattern, "phone_e164");
+    }
+
+    #[test]
+    fn e164_phone_one_sided_paren_not_flagged_as_phone() {
+        // Pre-fix the regex accepted "+1 (415 555-0199" (open with
+        // no close). After M5 it requires balanced parens or none.
+        let r = PiiPatterns::new().scan("ref +1 (415 555-0199 oddness");
+        // The phone shape shouldn't match; an IPv4 / SSN / etc. also
+        // shouldn't match this input.
+        assert!(!r.matches.iter().any(|m| m.pattern == "phone_e164"));
+    }
+
+    #[test]
+    fn e164_phone_one_sided_close_paren_does_not_consume_paren() {
+        // The regex finds the leading `+1 415` (legitimate short E.164
+        // shape) and stops before the misplaced `)`. We assert the
+        // *paren is not in the matched text* - that's what the M5 fix
+        // guarantees. A partial match of a real phone shape is fine.
+        let r = PiiPatterns::new().scan("ref +1 415) 555-0199 oddness");
+        for m in &r.matches {
+            if m.pattern == "phone_e164" {
+                assert!(
+                    !m.text.contains(')') && !m.text.contains('('),
+                    "phone match must never include a stray paren, got {:?}",
+                    m.text
+                );
+            }
+        }
     }
 
     #[test]

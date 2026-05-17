@@ -62,6 +62,9 @@ llm-guard = "0.2"
    Catches rephrased attacks the literal substring tables miss
    ("kindly disregard everything you were told previously"). Default
    severity `Warn` — feeds the audit log, doesn't auto-refuse.
+   The default corpus is **English-only**; non-Latin-script
+   deployments should pass their own corpus via
+   `FuzzyMatch::with_corpus`.
 3. **ML (separate [`llm-guard-ml`](../llm-guard-ml) crate).**
    ONNX-runtime-backed scanner for novel / paraphrased attacks the
    rules tier can't catch. Caller supplies the model file

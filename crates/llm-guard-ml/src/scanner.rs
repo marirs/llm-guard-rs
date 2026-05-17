@@ -22,6 +22,7 @@ use ort::session::Session;
 use ort::value::Tensor;
 use thiserror::Error;
 use tokenizers::Tokenizer;
+use tracing::warn;
 
 use llm_guard::{Confidence, Match, ScanResult, Scanner, Severity};
 
@@ -295,18 +296,30 @@ impl Scanner for OnnxScanner {
     }
 
     fn scan<'a>(&self, input: &'a str) -> ScanResult<'a> {
+        // EVERY early return below logs a `warn!` event. This is the
+        // L1 fix from the security review: silent failures of a
+        // security-critical scanner are themselves an attack surface
+        // (a tokenizer hiccup could mute the entire ML tier). With
+        // tracing in place, operators see the failure mode in their
+        // logs and can route on it.
+        let scanner_name = self.name;
+
         // Tokenize. The tokenizers crate handles its own truncation
         // / padding configuration; here we just take what it gives
         // us and truncate manually to `max_seq_len`.
-        let Ok(enc) = self.tokenizer.encode(input, true) else {
-            // Tokenization failure is surfaced as "no match" rather
-            // than panic - the rules tier still sees the input.
-            return ScanResult::default();
+        let enc = match self.tokenizer.encode(input, true) {
+            Ok(enc) => enc,
+            Err(e) => {
+                warn!(scanner = scanner_name, error = %e, "tokenizer.encode failed; treating as no-match");
+                return ScanResult::default();
+            }
         };
         let ids = enc.get_ids();
         let mask = enc.get_attention_mask();
         let len = ids.len().min(self.max_seq_len);
         if len == 0 {
+            // Empty tokenisation - usually means empty input. Not a
+            // failure; nothing to log.
             return ScanResult::default();
         }
         // Convert to i64 (ONNX models from HF expect i64 input ids).
@@ -315,43 +328,90 @@ impl Scanner for OnnxScanner {
         // `len` is bounded by `max_seq_len` (default 512) so the
         // cast can't overflow i64 in practice, but be explicit.
         let Ok(len_i64) = i64::try_from(len) else {
+            warn!(
+                scanner = scanner_name,
+                len, "max_seq_len exceeds i64::MAX; treating as no-match"
+            );
             return ScanResult::default();
         };
         let shape = [1_i64, len_i64];
 
         // Build input tensors. `Tensor::from_array((shape, vec))`
         // gives us a tensor that owns its data - no ndarray dance.
-        let Ok(ids_tensor) = Tensor::from_array((shape, input_ids)) else {
-            return ScanResult::default();
+        let ids_tensor = match Tensor::from_array((shape, input_ids)) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(scanner = scanner_name, error = %e, "input_ids tensor build failed; treating as no-match");
+                return ScanResult::default();
+            }
         };
-        let Ok(mask_tensor) = Tensor::from_array((shape, attention_mask)) else {
-            return ScanResult::default();
+        let mask_tensor = match Tensor::from_array((shape, attention_mask)) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(scanner = scanner_name, error = %e, "attention_mask tensor build failed; treating as no-match");
+                return ScanResult::default();
+            }
         };
 
-        // Run inference under the session lock.
-        let Ok(mut session) = self.session.lock() else {
-            return ScanResult::default();
+        // L2 fix: previously a poisoned mutex (panic in another scan
+        // thread) silently disabled this scanner forever. Now we
+        // recover the inner session via `into_inner()` on
+        // `PoisonError` - the session's own state is independent of
+        // the panic, and continuing to use it is preferable to
+        // permanent fail-clean.
+        let mut session = match self.session.lock() {
+            Ok(guard) => guard,
+            Err(poison) => {
+                warn!(
+                    scanner = scanner_name,
+                    "session mutex was poisoned by a prior panic; recovering and continuing"
+                );
+                poison.into_inner()
+            }
         };
-        let Ok(outputs) = session.run(ort::inputs![
+        let outputs = match session.run(ort::inputs![
             "input_ids" => ids_tensor,
             "attention_mask" => mask_tensor,
-        ]) else {
-            return ScanResult::default();
+        ]) {
+            Ok(o) => o,
+            Err(e) => {
+                warn!(scanner = scanner_name, error = %e, "ort session.run failed; treating as no-match");
+                return ScanResult::default();
+            }
         };
 
         // Pull the first output (usually "logits"). Some models name
         // it "output_0" - we don't depend on the name.
         let Some((_, first)) = outputs.iter().next() else {
+            warn!(
+                scanner = scanner_name,
+                "ort returned no outputs; treating as no-match"
+            );
             return ScanResult::default();
         };
-        let Ok((shape, logits)) = first.try_extract_tensor::<f32>() else {
-            return ScanResult::default();
+        let (out_shape, logits) = match first.try_extract_tensor::<f32>() {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(scanner = scanner_name, error = %e, "could not extract f32 logits tensor; treating as no-match");
+                return ScanResult::default();
+            }
         };
 
-        // Expect shape [1, 2]: [benign, injection]. Apply softmax,
-        // take the injection probability, compare to threshold.
-        let dims = shape.as_ref();
-        if dims.len() < 2 || dims[dims.len() - 1] != 2 || logits.len() < 2 {
+        // L3 fix: previously we silently returned clean on
+        // unexpected output shapes - a misconfigured model (e.g.
+        // a multi-class toxicity classifier with `[1, 3]` output
+        // wired to an OnnxScanner) would look like a clean scan
+        // forever. Now we log the actual shape so the operator
+        // can spot the mismatch on first call.
+        let dims = out_shape.as_ref();
+        let last_dim = dims.last().copied();
+        if dims.len() < 2 || last_dim != Some(2) || logits.len() < 2 {
+            warn!(
+                scanner = scanner_name,
+                shape = ?dims,
+                logits_len = logits.len(),
+                "OnnxScanner expects 2-class output (shape [..., 2]); got something else - treating as no-match. Use OnnxScannerBuilder with a custom inference path if your model has a different head."
+            );
             return ScanResult::default();
         }
         let prob_injection = softmax_binary(logits[0], logits[1]);

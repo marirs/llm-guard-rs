@@ -11,6 +11,19 @@
 //!   (e.g. Cyrillic 'р' next to Latin 'aypal'). This is the part
 //!   that catches phishing-link smuggling.
 //!
+//! ## URL boundary detection
+//!
+//! Real URLs can contain `(...)` groups (Wikipedia disambiguation,
+//! `Page_(2)`, MSDN URL fragments). A naïve "stop at `)`" extractor
+//! truncates them and loses the host's domain entirely in adversarial
+//! shapes - see [`crate::MarkdownLinkSmuggle`] for the same bypass
+//! class. We use a two-pass approach:
+//!
+//! 1. The regex matches a generous candidate (anything URL-safe).
+//! 2. A post-pass trims trailing punctuation: a closing `)` is
+//!    stripped iff its matching `(` is **not** inside the URL.
+//!    Common end-of-sentence punctuation (`.,;:!?`) is also stripped.
+//!
 //! Strict zero-copy: the URL span and the homograph span both
 //! borrow from the input. The mixed-script test reads chars in place
 //! without allocating.
@@ -27,11 +40,12 @@ use crate::{Confidence, Match, ScanResult, Scanner, Severity};
 /// have very different threat profiles and belong in their own
 /// scanners if anyone needs them.
 ///
-/// The character class for the host + path is the URL-safe set per
-/// RFC 3986 with `%` for percent-encoding. We stop at whitespace so
-/// trailing punctuation like `, ` or `).` doesn't get sucked in.
+/// Character class accepts `)` so internal balanced parens stay with
+/// the URL. The post-pass [`trim_url_tail`] decides how much trailing
+/// punctuation to drop. Whitespace and angle brackets terminate
+/// unconditionally.
 static URL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"https?://[^\s<>\)]+").expect("url regex compile"));
+    LazyLock::new(|| Regex::new(r"https?://[^\s<>]+").expect("url regex compile"));
 
 pub struct UrlExtract;
 
@@ -56,7 +70,15 @@ impl Scanner for UrlExtract {
     fn scan<'a>(&self, input: &'a str) -> ScanResult<'a> {
         let mut matches = Vec::new();
         for m in URL_RE.find_iter(input) {
-            let span = m.start()..m.end();
+            // Trim trailing punctuation that shouldn't belong to the
+            // URL (`).`, `,`, `;`, etc). Returns the trimmed length;
+            // the slice we emit is `input[start..start+trimmed_len]`.
+            let raw = m.as_str();
+            let trimmed_len = trim_url_tail(raw);
+            if trimmed_len == 0 {
+                continue;
+            }
+            let span = m.start()..(m.start() + trimmed_len);
             let text = &input[span.clone()];
             // Emit the URL itself as Info - the caller decides
             // whether to allowlist / denylist.
@@ -88,6 +110,58 @@ impl Scanner for UrlExtract {
         }
         ScanResult { matches }
     }
+}
+
+/// Trim trailing punctuation that shouldn't belong to the URL.
+/// Returns the byte length of the URL after trimming.
+///
+/// The interesting case is `)`: a closing paren *belongs* to the URL
+/// if its matching `(` is also inside the URL (Wikipedia
+/// `Page_(disambiguation)`), and *belongs to the surrounding prose*
+/// if it isn't (`(see https://example.com)`). We strip closing
+/// parens one at a time from the right, but stop as soon as the
+/// remaining paren count is balanced (or unbalanced in the URL's
+/// favour - more `(` than `)`).
+///
+/// Common end-of-sentence punctuation is always stripped first.
+fn trim_url_tail(raw: &str) -> usize {
+    let bytes = raw.as_bytes();
+    let mut end = bytes.len();
+    // First pass: strip trivial trailing punctuation.
+    while end > 0 {
+        match bytes[end - 1] {
+            b'.' | b',' | b';' | b':' | b'!' | b'?' | b'"' | b'\'' => end -= 1,
+            _ => break,
+        }
+    }
+    // Second pass: strip unmatched closing parens.
+    loop {
+        if end == 0 || bytes[end - 1] != b')' {
+            break;
+        }
+        let (opens, closes) = count_parens(&bytes[..end]);
+        if closes > opens {
+            end -= 1;
+        } else {
+            break;
+        }
+    }
+    end
+}
+
+/// Count `(` and `)` in a byte slice. ASCII-only, so byte iteration
+/// is safe even with multibyte content elsewhere in the input.
+fn count_parens(b: &[u8]) -> (usize, usize) {
+    let mut opens = 0;
+    let mut closes = 0;
+    for &c in b {
+        match c {
+            b'(' => opens += 1,
+            b')' => closes += 1,
+            _ => {}
+        }
+    }
+    (opens, closes)
 }
 
 /// Return the byte range of the host inside the URL, where `offset`
@@ -178,5 +252,61 @@ mod tests {
         let r = UrlExtract::new().scan("see (https://example.com), thanks");
         let m = r.first().unwrap();
         assert_eq!(m.text, "https://example.com");
+    }
+
+    // ---- Regression: M2 balanced-paren handling -------------------
+
+    #[test]
+    fn wikipedia_style_disambig_url_preserved() {
+        // Real-world URL with intentional inner parens. The post-pass
+        // must keep them; the previous greedy regex truncated at the
+        // first `)`.
+        let input = "see https://en.example.com/wiki/Term_(disambig) for details";
+        let r = UrlExtract::new().scan(input);
+        let m = r.first().unwrap();
+        assert_eq!(m.text, "https://en.example.com/wiki/Term_(disambig)");
+    }
+
+    #[test]
+    fn nested_balanced_parens_kept() {
+        let input = "fetch https://example.com/a(b(c)d)e now";
+        let r = UrlExtract::new().scan(input);
+        assert_eq!(r.first().unwrap().text, "https://example.com/a(b(c)d)e");
+    }
+
+    #[test]
+    fn url_wrapped_in_parens_trims_outer() {
+        // The outer `(...)` is prose, not part of the URL.
+        let r = UrlExtract::new().scan("(see https://example.com)");
+        let m = r.first().unwrap();
+        assert_eq!(m.text, "https://example.com");
+    }
+
+    #[test]
+    fn url_wrapped_in_parens_and_period_trims_both() {
+        let r = UrlExtract::new().scan("(visit https://example.com).");
+        let m = r.first().unwrap();
+        assert_eq!(m.text, "https://example.com");
+    }
+
+    #[test]
+    fn url_with_inner_parens_in_wrapping_parens_keeps_inner_only() {
+        // Outer paren is prose, inner is part of URL.
+        let r = UrlExtract::new().scan("(see https://example.com/Term_(disambig) for details)");
+        let m = r.first().unwrap();
+        assert_eq!(m.text, "https://example.com/Term_(disambig)");
+    }
+
+    #[test]
+    fn trailing_comma_semicolon_question_mark_trimmed() {
+        for trail in [",", ";", "?", "!", ".", ":", "..."] {
+            let input = format!("see https://example.com{trail} thanks");
+            let r = UrlExtract::new().scan(&input);
+            let m = r.first().unwrap();
+            assert_eq!(
+                m.text, "https://example.com",
+                "trailing {trail:?} should be trimmed"
+            );
+        }
     }
 }

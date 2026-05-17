@@ -10,6 +10,29 @@
 //!
 //! Compare to [`crate::Secrets`]: that scanner has a fixed, vetted
 //! pattern table. This one is the escape hatch for everything else.
+//!
+//! ## Security: caller-trusted patterns
+//!
+//! Patterns are compiled with the `regex` crate, which is RE2-derived
+//! and **non-backtracking** - true catastrophic-backtracking `ReDoS`
+//! is impossible by construction. The default 10 MiB pattern-size limit
+//! the `regex` crate enforces is sufficient protection against
+//! pathologically large patterns.
+//!
+//! However: this scanner does NOT sanity-check the patterns it
+//! receives beyond that. A malicious or buggy pattern can still:
+//!
+//! - **Match excessively broad inputs** (e.g. `.*` matches every
+//!   input). Treat patterns as the policy itself - bad patterns are
+//!   bad policy, not bad code.
+//! - **Run in linear time but with a large constant** on adversarial
+//!   inputs that exercise many `|` alternations. The `regex` crate
+//!   is `O(input × pattern_complexity)` in the worst case, not
+//!   `O(input²)`.
+//!
+//! If your patterns come from end-user input (rather than your own
+//! config), you almost certainly want to validate or sandbox them
+//! before passing to [`RegexPattern::new`].
 
 use regex::Regex;
 

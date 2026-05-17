@@ -50,6 +50,15 @@ tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 # library-side error crate; ~4KB compiled.
 thiserror = "2"
 
+# Structured-log facade for surfacing OnnxScanner runtime errors
+# (tokenizer failure, ONNX session error, unexpected output shape).
+# We chose `tracing` over `log` because the OnnxScanner is held under
+# a Mutex - tracing's span/event model lets operators correlate
+# events with the calling request/span without manual plumbing.
+# Tracing's default subscriber is no-op, so consumers that don't
+# install one pay zero runtime cost.
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+
 [features]
 default = []
 

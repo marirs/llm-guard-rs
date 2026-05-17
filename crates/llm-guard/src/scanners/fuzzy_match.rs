@@ -66,6 +66,18 @@
 //! because trigram-Jaccard inherently scores the whole input, not
 //! a region. Callers who need a literal span use the base-tier
 //! [`crate::BanSubstrings`] alongside this scanner.
+//!
+//! ## Language scope
+//!
+//! [`DEFAULT_CORPUS`] is **English-only**. Trigram similarity is
+//! script-symmetric (corpus and input are tokenised the same way),
+//! but if your input is in a non-Latin script the default corpus
+//! shares essentially no trigrams with it and recall drops to zero.
+//!
+//! For multilingual deployments use [`FuzzyMatch::with_corpus`] with
+//! paraphrases translated into the languages you actually expect.
+//! The simplest path is one [`FuzzyMatch`] per language, composed
+//! into the same [`crate::Pipeline`].
 
 use std::collections::HashSet;
 

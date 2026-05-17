@@ -17,20 +17,25 @@ use crate::{Confidence, Match, ScanResult, Scanner, Severity};
 
 pub struct Repetition {
     /// Minimum consecutive identical chars to count as a flood.
-    /// Must be >= 2; `new` enforces a floor.
+    /// A value of 0 or 1 **disables** the scanner (every input
+    /// trivially satisfies the threshold, which would emit a match
+    /// on every char - useless). Pick `>= 2` for a meaningful scanner.
     min_run: usize,
 }
 
 impl Repetition {
     /// Build a scanner that flags runs of `>= min_run` identical
-    /// chars. `min_run` is clamped to >= 2 (a "run of 1" is just one
-    /// char, not a run). Pick conservatively - too low and ordinary
-    /// markdown (`---`, `===`) trips.
+    /// chars. Pick conservatively - too low and ordinary markdown
+    /// (`---`, `===`) trips.
+    ///
+    /// **`min_run` of 0 or 1 disables the scanner.** A "run of 1" is
+    /// just one character; flagging every char is useless. The old
+    /// behaviour silently clamped to 2, which was a footgun for any
+    /// caller passing `0` expecting "off". Now `0` and `1` both
+    /// return a no-op scanner that never flags.
     #[must_use]
     pub const fn new(min_run: usize) -> Self {
-        Self {
-            min_run: if min_run < 2 { 2 } else { min_run },
-        }
+        Self { min_run }
     }
 }
 
@@ -40,6 +45,10 @@ impl Scanner for Repetition {
     }
 
     fn scan<'a>(&self, input: &'a str) -> ScanResult<'a> {
+        // Disabled - bail before allocating anything.
+        if self.min_run < 2 {
+            return ScanResult::default();
+        }
         let mut matches = Vec::new();
         // Single-pass: track current run's start, char, and length.
         let mut run_start: usize = 0;
@@ -115,11 +124,17 @@ mod tests {
     }
 
     #[test]
-    fn floor_enforced_for_min_run_lt_2() {
-        // new(0) is treated as new(2).
-        let r = Repetition::new(0).scan("aa bb");
-        assert!(r.flagged());
-        assert_eq!(r.matches.len(), 2);
+    fn min_run_zero_disables_scanner() {
+        // L4 fix: previously `new(0)` silently clamped to 2 and
+        // flagged every 2-char run. Now it acts as a no-op.
+        let r = Repetition::new(0).scan("aa bb cccc");
+        assert!(!r.flagged());
+    }
+
+    #[test]
+    fn min_run_one_disables_scanner() {
+        let r = Repetition::new(1).scan("aa bb cccc");
+        assert!(!r.flagged());
     }
 
     #[test]
