@@ -14,7 +14,7 @@
 //! whitespace are treated as neutral and ignored when picking the
 //! dominant script.
 
-use crate::{Match, ScanResult, Scanner};
+use crate::{Confidence, Match, ScanResult, Scanner, Severity};
 
 /// Coarse script bucket. Names are the audit-log identifiers - kept
 /// short and stable.
@@ -160,23 +160,30 @@ impl Scanner for ScriptMix {
                 }
             } else if let Some((start, run_script)) = run_start.take() {
                 let span = start..idx;
-                matches.push(Match {
-                    scanner: "script_mix",
-                    pattern: run_script.id(),
-                    span: span.clone(),
-                    text: &input[span],
-                });
+                // Look-alike attacks are suspicious but legitimate
+                // multilingual text exists too - Warn / Medium so the
+                // caller can review, not auto-refuse.
+                matches.push(Match::new(
+                    "script_mix",
+                    run_script.id(),
+                    span.clone(),
+                    &input[span],
+                    Confidence::Medium,
+                    Severity::Warn,
+                ));
             }
         }
         // Trailing run reaches end-of-input.
         if let Some((start, run_script)) = run_start {
             let span = start..input.len();
-            matches.push(Match {
-                scanner: "script_mix",
-                pattern: run_script.id(),
-                span: span.clone(),
-                text: &input[span],
-            });
+            matches.push(Match::new(
+                "script_mix",
+                run_script.id(),
+                span.clone(),
+                &input[span],
+                Confidence::Medium,
+                Severity::Warn,
+            ));
         }
         ScanResult { matches }
     }

@@ -8,7 +8,9 @@
 //! gives audit logs a stable name without the caller having to remember
 //! to pass `"role_override"` to `BanSubstrings::new`.
 
-use crate::{BanSubstrings, ScanResult, Scanner, patterns::ROLE_OVERRIDE_PATTERNS};
+use crate::{
+    BanSubstrings, Confidence, ScanResult, Scanner, Severity, patterns::ROLE_OVERRIDE_PATTERNS,
+};
 
 pub struct RoleOverride {
     inner: BanSubstrings,
@@ -24,7 +26,13 @@ impl RoleOverride {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: BanSubstrings::new("role_override", ROLE_OVERRIDE_PATTERNS),
+            // Role-override is the textbook injection we exist to refuse,
+            // so we escalate every hit to Block / High - callers wanting
+            // a softer policy can drop this scanner and use a plain
+            // BanSubstrings instead.
+            inner: BanSubstrings::new("role_override", ROLE_OVERRIDE_PATTERNS)
+                .with_severity(Severity::Block)
+                .with_confidence(Confidence::High),
         }
     }
 }

@@ -13,13 +13,17 @@
 
 use regex::Regex;
 
-use crate::{Match, ScanResult, Scanner};
+use crate::{Confidence, Match, ScanResult, Scanner, Severity};
 
 /// One caller-supplied pattern. `id` becomes [`Match::pattern`] - pick
 /// a short stable identifier so the audit log is greppable.
 pub struct RegexPattern {
     pub id: &'static str,
     pub regex: Regex,
+    /// Per-pattern severity. Defaults to [`Severity::Warn`].
+    pub severity: Severity,
+    /// Per-pattern confidence. Defaults to [`Confidence::Medium`].
+    pub confidence: Confidence,
 }
 
 impl RegexPattern {
@@ -32,7 +36,23 @@ impl RegexPattern {
         Ok(Self {
             id,
             regex: Regex::new(pattern)?,
+            severity: Severity::Warn,
+            confidence: Confidence::Medium,
         })
+    }
+
+    /// Builder: override the severity for this pattern.
+    #[must_use]
+    pub fn with_severity(mut self, severity: Severity) -> Self {
+        self.severity = severity;
+        self
+    }
+
+    /// Builder: override the confidence for this pattern.
+    #[must_use]
+    pub fn with_confidence(mut self, confidence: Confidence) -> Self {
+        self.confidence = confidence;
+        self
     }
 }
 
@@ -62,12 +82,14 @@ impl Scanner for RegexScan {
         for p in &self.patterns {
             for m in p.regex.find_iter(input) {
                 let span = m.start()..m.end();
-                matches.push(Match {
-                    scanner: self.name,
-                    pattern: p.id,
-                    span: span.clone(),
-                    text: &input[span],
-                });
+                matches.push(Match::new(
+                    self.name,
+                    p.id,
+                    span.clone(),
+                    &input[span],
+                    p.confidence,
+                    p.severity,
+                ));
             }
         }
         ScanResult { matches }

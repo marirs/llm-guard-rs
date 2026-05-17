@@ -11,7 +11,7 @@
 
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 
-use crate::{Match, ScanResult, Scanner};
+use crate::{Confidence, Match, ScanResult, Scanner, Severity};
 
 /// A static list of `&'static str` patterns plus the compiled
 /// automaton. Patterns are kept in the original `&'static str` form
@@ -26,6 +26,14 @@ pub struct BanSubstrings {
     /// `patterns()` accessor returns `&[u8]`, not `&'static str`.
     patterns: &'static [&'static str],
     ac: AhoCorasick,
+    /// Severity attached to every emitted match. Defaults to
+    /// [`Severity::Warn`] - the caller decides whether to escalate via
+    /// [`Self::with_severity`].
+    severity: Severity,
+    /// Confidence attached to every emitted match. Defaults to
+    /// [`Confidence::Medium`] - generic substring matches are
+    /// distinctive but caller-supplied lists vary widely.
+    confidence: Confidence,
 }
 
 impl BanSubstrings {
@@ -50,7 +58,30 @@ impl BanSubstrings {
             .match_kind(MatchKind::LeftmostFirst)
             .build(patterns)
             .expect("aho-corasick automaton build");
-        Self { name, patterns, ac }
+        Self {
+            name,
+            patterns,
+            ac,
+            severity: Severity::Warn,
+            confidence: Confidence::Medium,
+        }
+    }
+
+    /// Override the severity attached to every emitted match. Useful
+    /// when the caller knows their pattern list is a refuse-on-hit
+    /// table (e.g. role-override markers) and wants the audit-log
+    /// integration to treat hits as [`Severity::Block`].
+    #[must_use]
+    pub fn with_severity(mut self, severity: Severity) -> Self {
+        self.severity = severity;
+        self
+    }
+
+    /// Override the confidence attached to every emitted match.
+    #[must_use]
+    pub fn with_confidence(mut self, confidence: Confidence) -> Self {
+        self.confidence = confidence;
+        self
     }
 }
 
@@ -75,12 +106,14 @@ impl Scanner for BanSubstrings {
             // aho-corasick's byte offsets land on valid char edges
             // because the haystack is itself a `&str`.
             let text = &input[span.clone()];
-            matches.push(Match {
-                scanner: self.name,
+            matches.push(Match::new(
+                self.name,
                 pattern,
                 span,
                 text,
-            });
+                self.confidence,
+                self.severity,
+            ));
         }
         ScanResult { matches }
     }

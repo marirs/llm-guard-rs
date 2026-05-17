@@ -49,6 +49,44 @@ pub mod sanitize;
 pub mod scanners;
 pub mod wrap;
 
+/// How confident the scanner is that this hit represents a real attack
+/// or violation rather than benign text that happened to match the
+/// scanner's shape. Used by callers to set a refusal threshold without
+/// having to know each scanner's individual false-positive profile.
+///
+/// - `High`: shape is structural and rarely appears in benign text
+///   (chat-template markers, valid Luhn-checked card numbers, PEM
+///   private-key headers).
+/// - `Medium`: shape is distinctive but can occur in legitimate text
+///   (e.g. a phone-number-shaped string, a known injection phrase that
+///   could also appear in a security blog post).
+/// - `Low`: heuristic / fuzzy match - prefer to log rather than refuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Confidence {
+    Low = 0,
+    Medium = 1,
+    High = 2,
+}
+
+/// What action the scanner *recommends* on this hit. The library never
+/// enforces - the caller decides - but having the recommendation on
+/// every `Match` means callers can configure a single policy
+/// ("refuse on Block, otherwise log") instead of per-scanner branching.
+///
+/// - `Info`: noteworthy but harmless on its own (e.g. a URL was
+///   extracted; the caller may want to log or annotate).
+/// - `Warn`: suspicious - log loudly, consider wrapping the input with
+///   a defensive preamble via [`wrap::with_boundary`].
+/// - `Block`: high-confidence attack signal - refuse the request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Severity {
+    Info = 0,
+    Warn = 1,
+    Block = 2,
+}
+
 /// A single scanner hit. Spans are byte offsets into the original
 /// input; `text` is `&input[span]` so callers can render it directly
 /// without re-slicing.
@@ -66,6 +104,49 @@ pub struct Match<'a> {
     pub span: Range<usize>,
     /// `&input[span]` - borrowed from the caller's input.
     pub text: &'a str,
+    /// Scanner's confidence in this hit. See [`Confidence`].
+    pub confidence: Confidence,
+    /// Scanner's recommended action. See [`Severity`].
+    pub severity: Severity,
+    /// True iff the scanner fired on a *decoded* / *normalised* view
+    /// of `text` rather than the literal byte content (e.g. a
+    /// base64-decoded inner payload matched an injection phrase, or
+    /// the input was deobfuscated to ASCII before matching). The
+    /// `span` still points at the **encoded** bytes in the original
+    /// input - this is the zero-copy contract.
+    pub decoded: bool,
+}
+
+impl<'a> Match<'a> {
+    /// Convenience constructor used by every built-in scanner.
+    /// `decoded` defaults to `false`; the Deobfuscate scanner flips it
+    /// via [`Self::with_decoded`].
+    #[must_use]
+    pub fn new(
+        scanner: &'static str,
+        pattern: &'static str,
+        span: Range<usize>,
+        text: &'a str,
+        confidence: Confidence,
+        severity: Severity,
+    ) -> Self {
+        Self {
+            scanner,
+            pattern,
+            span,
+            text,
+            confidence,
+            severity,
+            decoded: false,
+        }
+    }
+
+    /// Set the `decoded` flag (used by [`crate::scanners::Deobfuscate`]).
+    #[must_use]
+    pub fn with_decoded(mut self, decoded: bool) -> Self {
+        self.decoded = decoded;
+        self
+    }
 }
 
 /// Outcome of a single scanner run. Matches borrow from the original
@@ -77,10 +158,27 @@ pub struct ScanResult<'a> {
 }
 
 impl<'a> ScanResult<'a> {
-    /// True iff at least one match was recorded.
+    /// True iff at least one match was recorded. Matches
+    /// pre-0.2 behavior - any scanner hit, regardless of severity.
+    /// For severity-aware refusal logic prefer [`Self::should_refuse`].
     #[must_use]
     pub fn flagged(&self) -> bool {
         !self.matches.is_empty()
+    }
+
+    /// True iff at least one match has [`Severity::Block`]. This is
+    /// the recommended refusal predicate - it lets callers wire a
+    /// single policy ("refuse on Block, otherwise log and proceed")
+    /// instead of branching per scanner.
+    #[must_use]
+    pub fn should_refuse(&self) -> bool {
+        self.matches.iter().any(|m| m.severity == Severity::Block)
+    }
+
+    /// Highest severity across all matches, or `None` if clean.
+    #[must_use]
+    pub fn max_severity(&self) -> Option<Severity> {
+        self.matches.iter().map(|m| m.severity).max()
     }
 
     /// First match, if any - convenient for callers that only care
@@ -95,6 +193,28 @@ impl<'a> ScanResult<'a> {
     /// [`Pipeline`] to accumulate across scanners.
     pub fn extend(&mut self, other: ScanResult<'a>) {
         self.matches.extend(other.matches);
+    }
+}
+
+// Ordering for `max_severity()` - `Info < Warn < Block`.
+impl PartialOrd for Severity {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Severity {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (*self as u8).cmp(&(*other as u8))
+    }
+}
+impl PartialOrd for Confidence {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Confidence {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (*self as u8).cmp(&(*other as u8))
     }
 }
 
@@ -168,4 +288,8 @@ pub use sanitize::strip_controls;
 pub use scanners::{
     BanCode, BanSubstrings, InvisibleText, RegexPattern, RegexScan, RoleOverride, ScriptMix,
     Secrets, TokenLimit,
+};
+// New 0.2.0 scanners - re-exported as each module lands.
+pub use scanners::{
+    Deobfuscate, MarkdownLinkSmuggle, PiiPatterns, Repetition, TemplateMarkerShape, UrlExtract,
 };

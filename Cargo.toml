@@ -1,10 +1,10 @@
 [package]
 name        = "llm-guard"
-version     = "0.1.1"
+version     = "0.2.0"
 edition     = "2024"
 rust-version = "1.85"
 license     = "MIT OR Apache-2.0"
-description = "Zero-copy guardrails for LLM input/output. Pure-Rust scanners (prompt-injection, role-override, secret leakage, invisible text, token limit)."
+description = "Zero-copy guardrails for LLM input/output. Pure-Rust scanners (prompt-injection, role-override, secret leakage, PII, invisible text, deobfuscation, token limit)."
 keywords    = ["llm", "safety", "guard", "prompt-injection", "security"]
 categories  = ["text-processing"]
 authors = ["Sriram <marirs@gmail.com>"]
@@ -19,12 +19,26 @@ path = "src/lib.rs"
 # caller can render highlights without re-scanning.
 aho-corasick = "1"
 
-# Compiled regex for the Secrets scanner. Patterns are static so the
+# Compiled regex for the Secrets / PII / URL scanners. Patterns are static so the
 # compile happens once on first use via std::sync::LazyLock.
 regex        = "1"
 
+# Base64 decoder used by Deobfuscate. Only invoked behind a shape-gate
+# (a long base64-looking run must be present), so clean scans pay zero
+# decode cost. Pure Rust, no_std-capable, ~30KB compiled.
+base64       = "0.22"
+
+# Unicode TR39 confusables fold for the Deobfuscate pre-pass. Pure-Rust,
+# no runtime data downloads (tables compiled in at build time).
+unicode-security = "0.1"
+
 [lints.rust]
-unsafe_code = "forbid"
+# `deny` rather than `forbid` so the integration test that swaps the
+# global allocator can opt-in with `#![allow(unsafe_code)]`. The
+# library code itself keeps `#![forbid(unsafe_code)]` declared at the
+# top of src/lib.rs, so production code paths still have the harder
+# guarantee.
+unsafe_code = "deny"
 
 [lints.clippy]
 pedantic                = { level = "warn", priority = -1 }

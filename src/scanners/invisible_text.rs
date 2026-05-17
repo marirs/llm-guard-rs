@@ -9,7 +9,7 @@
 
 use std::ops::Range;
 
-use crate::{Match, ScanResult, Scanner};
+use crate::{Confidence, Match, ScanResult, Scanner, Severity};
 
 // Single-codepoint detection list. The hot path is the `match` in
 // [`lookup`] below (compiles to a jump table); this comment is the
@@ -56,12 +56,16 @@ impl Scanner for InvisibleText {
         for (idx, ch) in input.char_indices() {
             if let Some(pattern) = lookup(ch) {
                 let span: Range<usize> = idx..idx + ch.len_utf8();
-                matches.push(Match {
-                    scanner: "invisible_text",
+                // Zero-width and bidi codepoints have no legitimate
+                // place in a chat turn - High / Block by default.
+                matches.push(Match::new(
+                    "invisible_text",
                     pattern,
-                    span: span.clone(),
-                    text: &input[span],
-                });
+                    span.clone(),
+                    &input[span],
+                    Confidence::High,
+                    Severity::Block,
+                ));
             }
         }
         ScanResult { matches }

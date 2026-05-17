@@ -14,7 +14,7 @@
 //! legitimate (a code-review assistant, a programming tutor). The
 //! call site decides.
 
-use crate::{BanSubstrings, ScanResult, Scanner};
+use crate::{BanSubstrings, Confidence, ScanResult, Scanner, Severity};
 
 /// Markers that strongly indicate code rather than prose. The list is
 /// deliberately tight - common keywords that also appear in English
@@ -68,7 +68,12 @@ impl BanCode {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: BanSubstrings::new("ban_code", CODE_MARKERS),
+            // Code-marker matches are shape-based but can legitimately
+            // appear in prose about code, so we stay at Warn / Medium
+            // - the call site picks whether to refuse or just annotate.
+            inner: BanSubstrings::new("ban_code", CODE_MARKERS)
+                .with_severity(Severity::Warn)
+                .with_confidence(Confidence::Medium),
         }
     }
 }

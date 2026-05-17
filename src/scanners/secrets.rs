@@ -16,7 +16,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::{Match, ScanResult, Scanner};
+use crate::{Confidence, Match, ScanResult, Scanner, Severity};
 
 /// One entry per credential class. Order is significant only when
 /// the host pipeline runs in `FirstHit` mode; otherwise every match
@@ -28,46 +28,68 @@ use crate::{Match, ScanResult, Scanner};
 /// alternative (a single combined regex) loses per-class attribution.
 /// New patterns should aim for shape-distinct prefixes to keep the
 /// overlap rate low.
-const PATTERNS: &[(&str, &str)] = &[
+///
+/// The `confidence` field gates the operator's refusal policy: JWT is
+/// famously high-recall (every base64-shaped triple-segment string
+/// looks like one), so it's Medium; the prefixed-vendor keys and PEM
+/// headers are essentially impossible to FP and get High.
+const PATTERNS: &[(&str, &str, Confidence)] = &[
     // OpenAI / Anthropic API key (sk-…, sk-proj-…, sk-ant-…). 20+
     // chars of base62 after the prefix. One pattern covers both
     // vendors - the `sk-ant-` prefix is enough to identify the
     // vendor at audit time without a duplicate rule.
-    ("openai_key", r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}\b"),
+    (
+        "openai_key",
+        r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}\b",
+        Confidence::High,
+    ),
     // AWS access key ID (AKIA…/ASIA…/AGPA…/AIDA…).
     (
         "aws_access_key",
         r"\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA)[A-Z0-9]{16}\b",
+        Confidence::High,
     ),
     // GitHub personal access tokens (ghp_, ghs_, gho_, ghu_, ghr_).
-    ("github_token", r"\bgh[psoru]_[A-Za-z0-9]{36,}\b"),
+    (
+        "github_token",
+        r"\bgh[psoru]_[A-Za-z0-9]{36,}\b",
+        Confidence::High,
+    ),
     // Slack bot/user/app tokens.
-    ("slack_token", r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),
+    (
+        "slack_token",
+        r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b",
+        Confidence::High,
+    ),
     // Stripe live + test secret keys.
     (
         "stripe_key",
         r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b",
+        Confidence::High,
     ),
     // PEM-encoded private keys. The header alone is the leak - body
     // doesn't need to be matched.
     (
         "pem_private_key",
         r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----",
+        Confidence::High,
     ),
     // JWT-shaped string (header.payload.signature). High-recall by
-    // design; the operator filters false positives in review.
+    // design; Medium confidence so callers can route it to a softer
+    // policy than the prefixed credentials above.
     (
         "jwt",
         r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b",
+        Confidence::Medium,
     ),
 ];
 
 /// Pre-compiled regex per pattern. Building is one-shot at first
 /// scan; afterwards every call is a borrow + match.
-static COMPILED: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
+static COMPILED: LazyLock<Vec<(&'static str, Regex, Confidence)>> = LazyLock::new(|| {
     PATTERNS
         .iter()
-        .map(|(id, src)| (*id, Regex::new(src).expect("secrets regex compile")))
+        .map(|(id, src, conf)| (*id, Regex::new(src).expect("secrets regex compile"), *conf))
         .collect()
 });
 
@@ -93,15 +115,22 @@ impl Scanner for Secrets {
 
     fn scan<'a>(&self, input: &'a str) -> ScanResult<'a> {
         let mut matches = Vec::new();
-        for (id, re) in &*COMPILED {
+        for (id, re, conf) in &*COMPILED {
             for m in re.find_iter(input) {
                 let span = m.start()..m.end();
-                matches.push(Match {
-                    scanner: "secrets",
-                    pattern: id,
-                    span: span.clone(),
-                    text: &input[span],
-                });
+                // Credential leakage is always Block - even a
+                // probable false positive (JWT shape) should refuse
+                // until the operator reviews. Confidence varies so
+                // policy layers can downgrade if they trust their
+                // upstream filtering.
+                matches.push(Match::new(
+                    "secrets",
+                    id,
+                    span.clone(),
+                    &input[span],
+                    *conf,
+                    Severity::Block,
+                ));
             }
         }
         ScanResult { matches }

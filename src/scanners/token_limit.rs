@@ -9,7 +9,7 @@
 //! slice past the limit - useful for "your message was truncated"
 //! UX without re-scanning the input.
 
-use crate::{Match, ScanResult, Scanner};
+use crate::{Confidence, Match, ScanResult, Scanner, Severity};
 
 pub struct TokenLimit {
     /// Maximum character count. `0` disables the scanner (always
@@ -48,13 +48,17 @@ impl Scanner for TokenLimit {
         };
         let span = overflow_start..input.len();
         let text = &input[span.clone()];
+        // The caller set a hard limit - if we're over it that's a
+        // deterministic Block, no ambiguity.
         ScanResult {
-            matches: vec![Match {
-                scanner: "token_limit",
-                pattern: "overflow",
+            matches: vec![Match::new(
+                "token_limit",
+                "overflow",
                 span,
                 text,
-            }],
+                Confidence::High,
+                Severity::Block,
+            )],
         }
     }
 }
